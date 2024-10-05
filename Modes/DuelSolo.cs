@@ -1,6 +1,7 @@
 using MCGalaxy.Config;
 using MCGalaxy.Network;
 using MCGalaxy;
+using BlockID = System.UInt16;
 
 public sealed class SpleefDuelSolo : Game {
     public override string ModeName() { return StaticModeName(); }
@@ -8,12 +9,10 @@ public sealed class SpleefDuelSolo : Game {
 
     public SpleefDuelSoloMapConfig MapConifg = new SpleefDuelSoloMapConfig();
 
-    public new static string StaticModeName() {
-        return "spleef-duel-solo";
+    public new static string StaticModeName() { return "spleef-duel-solo";
     }
 
-    public new static string StaticShortName() {
-        return "sd1";
+    public new static string StaticShortName() { return "sd1";
     }
 
     public override int BroadcastCountdown() { return -1; }
@@ -58,6 +57,24 @@ public sealed class SpleefDuelSolo : Game {
             players.Reverse();
         }
 
+        foreach (Player p in players) {
+            bool extBlocks = p.Session.hasExtBlocks;
+            BlockID[] breakable = MapConifg.breakable();
+            int count = breakable.Count();
+            int size = extBlocks ? 5 : 4;
+            byte[] bulk = new byte[count * size];
+
+            for (int i = 0; i < count; i++) {
+                bool place = false;
+                bool delete = true;
+                if (breakable[i] == Block.Air)
+                    place &= delete;
+                Packet.WriteBlockPermission(breakable[i], place, delete, extBlocks,
+                                            bulk, i * size);
+            }
+            p.Send(bulk);
+        }
+
         players[0].Send(Packet.VelocityControl(0, 0, 0, 1, 1, 1));
         players[0].SendPosition(
             Position.FromFeet((int)Math.Ceiling(MapConifg.Spawn1x * 32),
@@ -74,8 +91,39 @@ public sealed class SpleefDuelSolo : Game {
     }
 
     public override void OnPlayerJoinEvent(Player p) {
+        bool extBlocks = p.Session.hasExtBlocks;
+        int count = p.Session.MaxRawBlock + 1;
+        int size = extBlocks ? 5 : 4;
+        byte[] bulk = new byte[count * size];
+
+        for (int i = 0; i < count; i++) {
+            BlockID block = Block.FromRaw((BlockID)i);
+            bool place = false;
+            bool delete = false;
+            if (block == Block.Air)
+                place &= delete;
+            Packet.WriteBlockPermission((BlockID)i, place, delete, extBlocks, bulk,
+                                        i * size);
+        }
+        p.Send(bulk);
+
         MessageAll(
             $"{p.ColoredName} &ejoined the game ({players.Count}/{MaxPlayers})");
+    }
+
+    public override void OnPlayerMidgameLeaveEvent(Player p) {
+        if (HasEnded)
+            return;
+
+        HasEnded = true;
+        Player loser = p;
+        Player winner = ((players[0] == p) ? players[1] : players[0]);
+
+        winner.SendCpeMessage(CpeMessageType.BigAnnouncement, "&aYou Win");
+
+        MessageAll(Formatter.GameBarsWrap(
+            $"&eGame Ended\n{winner.ColoredName} &e(&awinner&e) vs {loser.ColoredName} &e(&closer&e)"));
+        DelayedUnload(5);
     }
 }
 
@@ -104,6 +152,9 @@ public sealed class SpleefDuelSoloMapConfig {
     [ConfigByte("spawn-2-pitch", "Spawn")]
     public byte Spawn2Pitch = 0;
 
+    [ConfigString("breakable", "Gameplay", "")]
+    public string Breakable = "";
+
     public void Load(string path) {
         if (!File.Exists(path))
             Save(path);
@@ -121,5 +172,17 @@ public sealed class SpleefDuelSoloMapConfig {
         using (StreamWriter w = new StreamWriter(path)) {
             ConfigElement.Serialise(cfg, w, this);
         }
+    }
+
+    public BlockID[] breakable() {
+        List<BlockID> ids = new List<BlockID>();
+        foreach (string entry in Breakable.Split(',')) {
+            try {
+                ids.Add((BlockID)Convert.ToUInt16(entry.Trim()));
+            } catch {
+            }
+        }
+
+        return ids.ToArray();
     }
 }
